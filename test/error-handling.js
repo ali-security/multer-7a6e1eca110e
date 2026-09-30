@@ -8,6 +8,8 @@ var multer = require('../')
 var removeUploadedFiles = require('../lib/remove-uploaded-files')
 var stream = require('stream')
 var FormData = require('form-data')
+var http = require('http')
+var net = require('net')
 
 function withLimits (limits, fields) {
   var storage = multer.memoryStorage()
@@ -303,6 +305,54 @@ describe('Error Handling', function () {
       assert.ifError(err)
       assert.strictEqual(errors.length, 0)
       done()
+    })
+  })
+
+  it('should not hang when client aborts multipart upload', function (done) {
+    this.timeout(5000)
+
+    var upload = multer({ storage: multer.memoryStorage() }).any()
+
+    var server = http.createServer(function (req, res) {
+      var hung = false
+
+      var timer = setTimeout(function () {
+        hung = true
+        server.close()
+        done(new Error('Middleware hung when client aborted request'))
+      }, 1000)
+
+      upload(req, res, function (/* err */) {
+        if (hung) return
+        clearTimeout(timer)
+        server.close()
+        done()
+      })
+    })
+
+    server.listen(0, function () {
+      var port = server.address().port
+      var boundary = 'PoC' + Date.now()
+      var sock = new net.Socket()
+
+      sock.connect(port, '127.0.0.1', function () {
+        sock.write(
+          'POST / HTTP/1.1\r\n' +
+          'Host: localhost\r\n' +
+          'Content-Type: multipart/form-data; boundary=' + boundary + '\r\n' +
+          'Content-Length: 999999\r\n\r\n' +
+          '--' + boundary + '\r\n' +
+          'Content-Disposition: form-data; name="file"; filename="test.bin"\r\n' +
+          'Content-Type: application/octet-stream\r\n\r\n' +
+          'AAAAAAAAAAAAAAAA'
+        )
+
+        setTimeout(function () {
+          sock.destroy()
+        }, 50)
+      })
+
+      sock.on('error', function () {})
     })
   })
 })
